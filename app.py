@@ -1,8 +1,6 @@
 from datetime import datetime
 import os
 import sqlite3
-from datetime import datetime
-import sqlite3
 from flask import Flask, flash, redirect, render_template, request, url_for
 
 app = Flask(__name__)
@@ -130,4 +128,4 @@ def cadastrar():
     return redirect(url_for("index"))
 
 if __name__ == "__main__":
-app.run(debug=False)
+    app.run(debug=False)
