@@ -1,23 +1,31 @@
 from datetime import datetime
+import os
 import sqlite3
-from flask import Flask, flash, redirect, render_template_string, request, url_for
+from flask import Flask, flash, redirect, render_template, request, url_for
 
 app = Flask(__name__)
-app.secret_key = "chave-secreta-mercadinho-fsg"
+app.config["SECRET_KEY"] = os.environ.get(
+    "SECRET_KEY",
+    "chave-temporaria-apenas-desenvolvimento"
+)
+# Configurações básicas de segurança de sessão/cookie
+app.config["SESSION_COOKIE_HTTPONLY"] = True
+app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
 
-DATABASE = "estoque.db"
+DATABASE = os.environ.get("DATABASE_PATH", "estoque.db")
 
 
 def get_db_connection():
-  conn = sqlite3.connect(DATABASE)
-  conn.row_factory = sqlite3.Row
-  return conn
+    conn = sqlite3.connect(DATABASE)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON;")
+    return conn
 
 
 def init_db():
-  conn = get_db_connection()
-  # Tabela de Produtos conforme planejado no projeto
-  conn.execute("""
+    conn = get_db_connection()
+
+    conn.execute("""
         CREATE TABLE IF NOT EXISTS produtos (
             id_produto INTEGER PRIMARY KEY AUTOINCREMENT,
             nome TEXT NOT NULL,
@@ -26,8 +34,8 @@ def init_db():
             quantidade_minima INTEGER NOT NULL CHECK(quantidade_minima >= 0)
         )
     """)
-  # Tabela de Movimentações (Entradas e Saídas)
-  conn.execute("""
+
+    conn.execute("""
         CREATE TABLE IF NOT EXISTS movimentacoes (
             id_movimentacao INTEGER PRIMARY KEY AUTOINCREMENT,
             id_produto INTEGER NOT NULL,
@@ -37,169 +45,182 @@ def init_db():
             FOREIGN KEY (id_produto) REFERENCES produtos (id_produto)
         )
     """)
-  conn.commit()
-  conn.close()
+
+    conn.commit()
+    conn.close()
 
 
-# Inicializa o banco ao iniciar
 init_db()
+
+
+@app.after_request
+def aplicar_headers_seguranca(response):
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "SAMEORIGIN"
+    return response
 
 
 @app.route("/")
 def index():
-  conn = get_db_connection()
-  produtos = conn.execute("SELECT * FROM produtos").fetchall()
+    conn = get_db_connection()
+    produtos = conn.execute(
+        "SELECT * FROM produtos ORDER BY nome ASC"
+    ).fetchall()
 
-  # Calcula alertas de estoque baixo (RF05)
-  total_produtos = len(produtos)
-  estoques_baixos = 0
-  for p in produtos:
-    if p["quantidade"] <= p["quantidade_minima"]:
-      estoques_baixos += 1
+    movimentacoes = conn.execute("""
+        SELECT m.id_movimentacao, p.nome AS produto_nome, m.tipo,
+               m.quantidade, m.data_movimentacao
+        FROM movimentacoes m
+        JOIN produtos p ON m.id_produto = p.id_produto
+        ORDER BY m.id_movimentacao DESC
+        LIMIT 10
+    """).fetchall()
 
-  estoques_normais = total_produtos - estoques_baixos
-  conn.close()
+    total_produtos = len(produtos)
+    estoques_baixos = sum(
+        1 for p in produtos
+        if p["quantidade"] <= p["quantidade_minima"]
+    )
+    estoques_normais = total_produtos - estoques_baixos
 
-  # Template HTML integrado simples para exibição do MVP
-  html_code = """
-    <!DOCTYPE html>
-    <html lang="pt-BR">
-    <head>
-        <meta charset="UTF-8">
-        <title>Controle de Estoque - Mercadinho</title>
-        <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
-    </head>
-    <body class="bg-light">
-        <nav class="navbar navbar-dark bg-primary shadow-sm">
-            <div class="container-fluid">
-                <span class="navbar-brand mb-0 h1">Controle de Estoque — Mercadinho de Bairro</span>
-            </div>
-        </nav>
-        <div class="container my-4">
-            <div class="row text-center mb-4">
-                <div class="col-md-4">
-                    <div class="card shadow-sm p-3">
-                        <h5>Total de Produtos</h5>
-                        <h3>{{ total }}</h3>
-                    </div>
-                </div>
-                <div class="col-md-4">
-                    <div class="card shadow-sm p-3 border-success">
-                        <h5>Estoque Normal</h5>
-                        <h3 class="text-success">{{ normais }}</h3>
-                    </div>
-                </div>
-                <div class="col-md-4">
-                    <div class="card shadow-sm p-3 border-danger">
-                        <h5>Estoque Baixo</h5>
-                        <h3 class="text-danger">{{ baixos }}</h3>
-                    </div>
-                </div>
-            </div>
+    conn.close()
 
-            <div class="card shadow-sm p-4 mb-4">
-                <h4>Cadastrar Novo Produto</h4>
-                <form action="/cadastrar" method="POST" class="row g-3 mt-2">
-                    <div class="col-md-4">
-                        <label class="form-label">Nome do Produto</label>
-                        <input type="text" name="nome" class="form-control" required>
-                    </div>
-                    <div class="col-md-3">
-                        <label class="form-label">Preço (R$)</label>
-                        <input type="number" step="0.01" name="preco" class="form-control" required>
-                    </div>
-                    <div class="col-md-2">
-                        <label class="form-label">Qtd Inicial</label>
-                        <input type="number" name="quantidade" class="form-control" required>
-                    </div>
-                    <div class="col-md-3">
-                        <label class="form-label">Qtd Mínima</label>
-                        <input type="number" name="quantidade_minima" class="form-control" required>
-                    </div>
-                    <div class="col-12">
-                        <button type="submit" class="btn btn-primary">Cadastrar Produto</button>
-                    </div>
-                </form>
-            </div>
-
-            <div class="card shadow-sm p-4">
-                <h4>Lista de Produtos em Estoque</h4>
-                <table class="table table-striped mt-3">
-                    <thead>
-                        <tr>
-                            <th>ID</th>
-                            <th>Nome</th>
-                            <th>Preço</th>
-                            <th>Quantidade</th>
-                            <th>Mínimo</th>
-                            <th>Status</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        {% for p in produtos %}
-                        <tr>
-                            <td>{{ p.id_produto }}</td>
-                            <td>{{ p.nome }}</td>
-                            <td>R$ {{ "%.2f"|format(p.preco) }}</td>
-                            <td>{{ p.quantidade }}</td>
-                            <td>{{ p.quantidade_minima }}</td>
-                            <td>
-                                {% if p.quantidade <= p.quantidade_minima %}
-                                    <span class="badge bg-danger">Estoque Baixo</span>
-                                {% else %}
-                                    <span class="badge bg-success">Em Estoque</span>
-                                {% endif %}
-                            </td>
-                        </tr>
-                        {% else %}
-                        <tr>
-                            <td colspan="6" class="text-center">Nenhum produto cadastrado ainda.</td>
-                        </tr>
-                        {% endfor %}
-                    </tbody>
-                </table>
-            </div>
-        </div>
-    </body>
-    </html>
-    """
-  return render_template_string(
-      html_code,
-      produtos=produtos,
-      total=total_produtos,
-      normais=estoques_normais,
-      baixos=estoques_baixos,
-  )
+    return render_template(
+        "index.html",
+        produtos=produtos,
+        movimentacoes=movimentacoes,
+        total=total_produtos,
+        normais=estoques_normais,
+        baixos=estoques_baixos,
+    )
 
 
 @app.route("/cadastrar", methods=["POST"])
 def cadastrar():
-  nome = request.form["nome"]
-  preco = float(request.form["preco"])
-  quantidade = int(request.form["quantidade"])
-  quantidade_minima = int(request.form["quantidade_minima"])
+    nome = request.form.get("nome", "").strip()
 
-  conn = get_db_connection()
-  cursor = conn.cursor()
-  cursor.execute(
-      "INSERT INTO produtos (nome, preco, quantidade, quantidade_minima)"
-      " VALUES (?, ?, ?, ?)",
-      (nome, preco, quantidade, quantidade_minima),
-  )
-  produto_id = cursor.lastrowid
+    try:
+        preco = float(request.form.get("preco", ""))
+        quantidade = int(request.form.get("quantidade", ""))
+        quantidade_minima = int(request.form.get("quantidade_minima", ""))
+    except ValueError:
+        flash("Preencha preço e quantidades com valores válidos.", "error")
+        return redirect(url_for("index"))
 
-  # Registra a movimentação inicial de entrada
-  data_atual = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-  cursor.execute(
-      "INSERT INTO movimentacoes (id_produto, tipo, quantidade,"
-      " data_movimentacao) VALUES (?, 'entrada', ?, ?)",
-      (produto_id, quantidade, data_atual),
-  )
+    if not nome or len(nome) > 100:
+        flash("O nome do produto é obrigatório (máx. 100 caracteres).", "error")
+        return redirect(url_for("index"))
 
-  conn.commit()
-  conn.close()
-  return redirect(url_for("index"))
+    if preco < 0 or quantidade < 0 or quantidade_minima < 0:
+        flash("Não são permitidos valores negativos.", "error")
+        return redirect(url_for("index"))
+
+    conn = get_db_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            INSERT INTO produtos
+            (nome, preco, quantidade, quantidade_minima)
+            VALUES (?, ?, ?, ?)
+            """,
+            (nome, preco, quantidade, quantidade_minima),
+        )
+
+        produto_id = cursor.lastrowid
+        data_atual = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+        if quantidade > 0:
+            cursor.execute(
+                """
+                INSERT INTO movimentacoes
+                (id_produto, tipo, quantidade, data_movimentacao)
+                VALUES (?, 'entrada', ?, ?)
+                """,
+                (produto_id, quantidade, data_atual),
+            )
+
+        conn.commit()
+        flash("Produto cadastrado com sucesso!", "success")
+    except sqlite3.Error:
+        conn.rollback()
+        flash("Erro ao salvar produto no banco de dados.", "error")
+    finally:
+        conn.close()
+
+    return redirect(url_for("index"))
+
+
+@app.route("/movimentar", methods=["POST"])
+def movimentar():
+    tipo = request.form.get("tipo", "").strip().lower()
+
+    try:
+        id_produto = int(request.form.get("id_produto", ""))
+        quantidade = int(request.form.get("quantidade", ""))
+    except ValueError:
+        flash("Selecione um produto e informe uma quantidade válida.", "error")
+        return redirect(url_for("index"))
+
+    if tipo not in ("entrada", "saida"):
+        flash("Tipo de movimentação inválido.", "error")
+        return redirect(url_for("index"))
+
+    if quantidade <= 0:
+        flash("A quantidade movimentada deve ser maior que zero.", "error")
+        return redirect(url_for("index"))
+
+    conn = get_db_connection()
+    try:
+        cursor = conn.cursor()
+        produto = cursor.execute(
+            "SELECT id_produto, nome, quantidade FROM produtos WHERE id_produto = ?",
+            (id_produto,),
+        ).fetchone()
+
+        if not produto:
+            flash("Produto não encontrado.", "error")
+            return redirect(url_for("index"))
+
+        saldo_atual = produto["quantidade"]
+
+        if tipo == "saida" and quantidade > saldo_atual:
+            flash(
+                f"Estoque insuficiente para '{produto['nome']}'. Saldo atual: {saldo_atual}.",
+                "error",
+            )
+            return redirect(url_for("index"))
+
+        novo_saldo = (
+            saldo_atual + quantidade if tipo == "entrada" else saldo_atual - quantidade
+        )
+        data_atual = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+        cursor.execute(
+            "UPDATE produtos SET quantidade = ? WHERE id_produto = ?",
+            (novo_saldo, id_produto),
+        )
+
+        cursor.execute(
+            """
+            INSERT INTO movimentacoes
+            (id_produto, tipo, quantidade, data_movimentacao)
+            VALUES (?, ?, ?, ?)
+            """,
+            (id_produto, tipo, quantidade, data_atual),
+        )
+
+        conn.commit()
+        acao = "Entrada" if tipo == "entrada" else "Saída"
+        flash(f"{acao} de {quantidade} un. registrada para '{produto['nome']}'!", "success")
+    except sqlite3.Error:
+        conn.rollback()
+        flash("Erro ao processar movimentação de estoque.", "error")
+    finally:
+        conn.close()
+
+    return redirect(url_for("index"))
 
 
 if __name__ == "__main__":
-  app.run(debug=True)
+    app.run(debug=False)
