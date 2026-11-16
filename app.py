@@ -1,10 +1,15 @@
-
+from datetime import datetime
+import os
+import sqlite3
 from datetime import datetime
 import sqlite3
 from flask import Flask, flash, redirect, render_template, request, url_for
 
 app = Flask(__name__)
-app.secret_key = "chave-secreta-mercadinho-fsg"
+app.config["SECRET_KEY"] = os.environ.get(
+    "SECRET_KEY",
+    "chave-temporaria-apenas-desenvolvimento"
+)
 
 DATABASE = "estoque.db"
 
@@ -110,4 +115,4 @@ def cadastrar():
 
 
 if __name__ == "__main__":
-    app.run(debug=True)
+app.run(debug=False)
