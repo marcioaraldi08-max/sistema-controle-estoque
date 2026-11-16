@@ -76,12 +76,26 @@ def index():
     )
 
 
+
 @app.route("/cadastrar", methods=["POST"])
 def cadastrar():
-    nome = request.form["nome"]
-    preco = float(request.form["preco"])
-    quantidade = int(request.form["quantidade"])
-    quantidade_minima = int(request.form["quantidade_minima"])
+    nome = request.form.get("nome", "").strip()
+
+    try:
+        preco = float(request.form.get("preco", ""))
+        quantidade = int(request.form.get("quantidade", ""))
+        quantidade_minima = int(request.form.get("quantidade_minima", ""))
+    except ValueError:
+        flash("Preencha preço e quantidades com valores válidos.", "error")
+        return redirect(url_for("index"))
+
+    if not nome:
+        flash("O nome do produto é obrigatório.", "error")
+        return redirect(url_for("index"))
+
+    if preco < 0 or quantidade < 0 or quantidade_minima < 0:
+        flash("Não são permitidos valores negativos.", "error")
+        return redirect(url_for("index"))
 
     conn = get_db_connection()
     cursor = conn.cursor()
@@ -99,20 +113,21 @@ def cadastrar():
 
     data_atual = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-    cursor.execute(
-        """
-        INSERT INTO movimentacoes
-        (id_produto, tipo, quantidade, data_movimentacao)
-        VALUES (?, 'entrada', ?, ?)
-        """,
-        (produto_id, quantidade, data_atual),
-    )
+    if quantidade > 0:
+        cursor.execute(
+            """
+            INSERT INTO movimentacoes
+            (id_produto, tipo, quantidade, data_movimentacao)
+            VALUES (?, 'entrada', ?, ?)
+            """,
+            (produto_id, quantidade, data_atual),
+        )
 
     conn.commit()
     conn.close()
 
+    flash("Produto cadastrado com sucesso!", "success")
     return redirect(url_for("index"))
-
 
 if __name__ == "__main__":
 app.run(debug=False)
